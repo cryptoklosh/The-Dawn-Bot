@@ -98,24 +98,28 @@ async def run() -> None:
         "re_verify_accounts": (config.accounts_to_reverify, process_re_verify_accounts),
     }
 
-    while True:
-        Console().build()
+    modules_to_run = sys.argv[1:]
+    print(modules_to_run)
+    for module in modules_to_run:
+        config.module = module
 
         if config.module not in module_map:
             logger.error(f"Unknown module: {config.module}")
-            break
+            exit(-1)
 
         accounts, process_func = module_map[config.module]
 
         if not accounts:
             logger.error(f"No accounts for {config.module}")
-            break
+            exit(-1)
 
         if config.module == "farm":
             await process_func(accounts)
         else:
             await run_module(accounts, process_func)
-            input("\n\nPress Enter to continue...")
+
+    exit(0)
+
 
 
 if __name__ == "__main__":
