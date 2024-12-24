@@ -7,7 +7,7 @@ from loader import config, file_operations
 from models import Account, OperationResult, StatisticData
 
 from .api import DawnExtensionAPI
-from utils import EmailValidator, LinkExtractor, mined_coins_gauge, dawn_requests_total_counter
+from utils import EmailValidator, LinkExtractor, mined_dawn_gauge, dawn_requests_total_counter
 from database import Accounts
 from .exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType
 
@@ -523,7 +523,7 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
             )
 
-            mined_coins_gauge.labels(account=f"{self.account_data.email}").set_function(
+            mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
                 lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
             )
 
