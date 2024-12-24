@@ -7,7 +7,7 @@ from loader import config, file_operations
 from models import Account, OperationResult, StatisticData
 
 from .api import DawnExtensionAPI
-from utils import EmailValidator, LinkExtractor
+from utils import EmailValidator, LinkExtractor, mined_coins_gauge, dawn_requests_total_counter
 from database import Accounts
 from .exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType
 
@@ -511,6 +511,7 @@ class Bot(DawnExtensionAPI):
             )
 
     async def perform_farming_actions(self):
+        proxy_address = self.account_data.proxy.as_url if self.account_data.proxy is not None else ""
         try:
             await self.keepalive()
             logger.success(
@@ -522,10 +523,16 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
             )
 
+            mined_coins_gauge.labels(account=f"{self.account_data.email}").set_function(
+                lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
+            )
+
+            dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
         except Exception as error:
             logger.error(
                 f"Account: {self.account_data.email} | Failed to perform farming actions: {error}"
             )
+            dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").inc()
 
         finally:
             new_sleep_until = self.get_sleep_until()

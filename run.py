@@ -10,7 +10,7 @@ from models import Account
 from utils import setup
 from console import Console
 from database import initialize_database
-
+from prometheus_client import start_http_server
 
 accounts_with_initial_delay: Set[str] = set()
 
@@ -89,7 +89,6 @@ async def run() -> None:
     await initialize_database()
     await file_operations.setup_files()
     reset_initial_delays()
-
     module_map = {
         "register": (config.accounts_to_register, process_registration),
         "farm": (config.accounts_to_farm, farm_continuously),
@@ -126,5 +125,6 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+    start_http_server(8080)
     setup()
     asyncio.run(run())

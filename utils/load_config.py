@@ -5,6 +5,7 @@ from loguru import logger
 from models import Config, Account
 from better_proxy import Proxy
 from typing import List, Dict, Generator
+from .metrics import dawn_info
 
 CONFIG_PATH = os.path.join(os.getcwd(), "config")
 CONFIG_DATA_PATH = os.path.join(CONFIG_PATH, "data")
@@ -59,11 +60,12 @@ def get_proxies() -> List[Proxy]:
         raise ValueError(f"Failed to parse proxy: {exc}")
 
 
-def get_accounts(file_name: str, redirect_mode: bool = False) -> Generator[Account, None, None]:
+def get_accounts(file_name: str, proxies: List[Proxy], redirect_mode: bool = False) -> Generator[Account, None, None]:
     try:
-        proxies = get_proxies()
         proxy_cycle = cycle(proxies) if proxies else None
         accounts = read_file(os.path.join(CONFIG_DATA_PATH, file_name), check_empty=False)
+
+        dawn_info.info({"proxies": f"{len(proxies)}"})
 
         for account in accounts:
             try:
@@ -119,9 +121,12 @@ def load_config() -> Config:
     try:
         params = get_params()
 
-        reg_accounts = list(get_accounts("register.txt", redirect_mode=params["redirect_settings"]["enabled"]))
-        farm_accounts = list(get_accounts("farm.txt"))
-        reverify_accounts = list(get_accounts("reverify.txt"))
+        proxies = get_proxies()
+        reg_accounts = list(get_accounts("register.txt", proxies, redirect_mode=params["redirect_settings"]["enabled"]))
+        farm_accounts = list(get_accounts("farm.txt", proxies))
+        reverify_accounts = list(get_accounts("reverify.txt", proxies))
+
+        dawn_info.info({"farm_accounts": f"{len(farm_accounts)}", "proxies": f"{len(proxies)}"})
 
         if not reg_accounts and not farm_accounts and not reverify_accounts:
             raise ValueError("No accounts found in data files")
