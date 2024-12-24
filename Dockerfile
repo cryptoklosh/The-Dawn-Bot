@@ -1,5 +1,5 @@
 FROM debian:12-slim
-RUN apt-get update && apt-get install -y python3 python3-venv
+RUN apt-get update && apt-get install -y python3 python3-venv python3-dev gcc
 WORKDIR /root/dawn
 COPY console ./console
 COPY core ./core
