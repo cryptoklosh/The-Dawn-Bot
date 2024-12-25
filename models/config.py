@@ -3,6 +3,7 @@ import random
 from typing import Literal
 import secrets
 import string
+from datetime import datetime
 
 from better_proxy import Proxy
 from pydantic import BaseModel, PositiveInt, ConfigDict, Field
@@ -18,6 +19,7 @@ class Account(BaseModel):
     appid: str = ""
     imap_server: str = "imap.gmail.com"
     proxy: Proxy
+    sleep_up_to: datetime = datetime.min
 
     async def init_appid(self):
         existing_appid = await Accounts.get_app_id(self.email)
