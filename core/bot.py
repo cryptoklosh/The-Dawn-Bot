@@ -11,8 +11,14 @@ from utils import EmailValidator, LinkExtractor, mined_dawn_gauge, dawn_requests
 from database import Accounts
 from .exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType
 
+from threading import RLock
+
 
 class Bot(DawnExtensionAPI):
+    shared_accounts_lock: RLock = RLock()
+    shared_accounts_to_last_request = dict()
+    shared_accounts_eviction_timeout_sec: int = 5 * 60 # 5 minutes
+
     def __init__(self, account: Account):
         super().__init__(account)
 
@@ -265,7 +271,7 @@ class Bot(DawnExtensionAPI):
         )
 
     @staticmethod
-    def get_sleep_until(blocked: bool = False) -> datetime:
+    def get_sleep_up_to(blocked: bool = False) -> datetime:
         duration = (
             timedelta(minutes=10)
             if blocked
@@ -450,8 +456,8 @@ class Bot(DawnExtensionAPI):
                     return False
 
         except CaptchaSolvingFailed:
-            sleep_until = self.get_sleep_until()
-            await Accounts.set_sleep_until(self.account_data.email, sleep_until)
+            sleep_up_to = self.get_sleep_up_to()
+            self.account_data.sleep_up_to = sleep_up_to
             logger.error(
                 f"Account: {self.account_data.email} | Failed to solve captcha after 5 attempts, sleeping..."
             )
@@ -464,8 +470,8 @@ class Bot(DawnExtensionAPI):
             return False
 
     async def handle_existing_account(self, db_account_data) -> bool | None:
-        if db_account_data.sleep_until and await self.handle_sleep(
-            db_account_data.sleep_until
+        if await self.handle_sleep(
+            self.account_data.sleep_up_to
         ):
             return False
 
@@ -486,17 +492,17 @@ class Bot(DawnExtensionAPI):
         logger.error(
             f"Account: {self.account_data.email} | Session rate-limited | Sleeping..."
         )
-        sleep_until = self.get_sleep_until(blocked=True)
-        await Accounts.set_session_blocked_until(email=self.account_data.email, session_blocked_until=sleep_until, app_id=self.account_data.appid)
+        sleep_up_to = self.get_sleep_up_to(blocked=True)
+        await Accounts.set_session_blocked_until(email=self.account_data.email, session_blocked_until=sleep_up_to, app_id=self.account_data.appid)
 
-    async def handle_sleep(self, sleep_until):
+    async def handle_sleep(self, sleep_up_to):
         current_time = datetime.now(pytz.UTC)
-        sleep_until = sleep_until.replace(tzinfo=pytz.UTC)
+        sleep_up_to = sleep_up_to.replace(tzinfo=pytz.UTC)
 
-        if sleep_until > current_time:
-            sleep_duration = (sleep_until - current_time).total_seconds()
+        if sleep_up_to > current_time:
+            sleep_duration = (sleep_up_to - current_time).total_seconds()
             logger.debug(
-                f"Account: {self.account_data.email} | Sleeping until next action {sleep_until} (duration: {sleep_duration:.2f} seconds)"
+                f"Account: {self.account_data.email} | Sleeping until next action {sleep_up_to} (duration: {sleep_duration:.2f} seconds)"
             )
             return True
 
@@ -518,16 +524,27 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Sent keepalive request"
             )
 
-            user_info = await self.user_info()
-            logger.info(
-                f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
-            )
+            with self.shared_accounts_lock:
+                last_request_at_sec = self.shared_accounts_to_last_request.get(self.account_data.email, 0)
+                now_sec = datetime.now(pytz.UTC).timestamp()
 
-            mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
-                lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
-            )
+                self.shared_accounts_to_last_request[self.account_data.email] = now_sec
+                if last_request_at_sec + self.shared_accounts_eviction_timeout_sec > now_sec:
+                    logger.debug(
+                        f"Skipping account fetch for {self.account_data.email} - last request at {last_request_at_sec}"
+                    )
+                else:
+                    user_info = await self.user_info()
 
-            dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
+                    logger.info(
+                        f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
+                    )
+
+                    mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
+                        lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
+                    )
+
+                    dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
         except Exception as error:
             logger.error(
                 f"Account: {self.account_data.email} | Failed to perform farming actions: {error}"
@@ -535,7 +552,5 @@ class Bot(DawnExtensionAPI):
             dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").inc()
 
         finally:
-            new_sleep_until = self.get_sleep_until()
-            await Accounts.set_sleep_until(
-                email=self.account_data.email, sleep_until=new_sleep_until
-            )
+            new_sleep_up_to = self.get_sleep_up_to()
+            self.account_data.sleep_up_to = new_sleep_up_to
