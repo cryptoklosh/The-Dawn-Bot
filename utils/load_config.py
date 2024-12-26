@@ -65,8 +65,6 @@ def get_accounts(file_name: str, proxies: List[Proxy], redirect_mode: bool = Fal
         proxy_cycle = cycle(proxies) if proxies else None
         accounts = read_file(os.path.join(CONFIG_DATA_PATH, file_name), check_empty=False)
 
-        dawn_info.info({"proxies": f"{len(proxies)}"})
-
         for account in accounts:
             try:
                 if not account.strip():
