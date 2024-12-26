@@ -21,6 +21,8 @@ class Bot(DawnExtensionAPI):
 
     def __init__(self, account: Account):
         super().__init__(account)
+        dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").reset()
+        dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").reset()
 
     async def get_captcha_data(self) -> Tuple[str, Any, Optional[Any]]:
         for _ in range(5):
@@ -517,7 +519,6 @@ class Bot(DawnExtensionAPI):
             )
 
     async def perform_farming_actions(self):
-        proxy_address = self.account_data.proxy.as_url if self.account_data.proxy is not None else ""
         try:
             await self.keepalive()
             logger.success(
