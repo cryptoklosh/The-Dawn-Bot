@@ -109,8 +109,10 @@ class EmailValidator:
             def login_sync():
                 with MailBoxClient(
                         host=self.imap_server,
-                        proxy=proxy,
-                        timeout=30
+#                         proxy=proxy,
+                        proxy=None,
+                        timeout=30,
+                        port=993,
                 ).login(self.email, self.password):
                     return True
 
@@ -213,8 +215,10 @@ class LinkExtractor:
                 def search_sync():
                     with MailBoxClient(
                             host=self.imap_server,
-                            proxy=proxy,
-                            timeout=30
+#                             proxy=proxy,
+                            proxy=None,
+                            timeout=30,
+                            port=993,
                     ).login(self.email, self.password) as mailbox:
                         return self._sync_search_messages(mailbox)
 
@@ -294,8 +298,10 @@ class LinkExtractor:
         def search_in_spam():
             with MailBoxClient(
                     host=self.imap_server,
-                    proxy=proxy,
-                    timeout=30
+#                     proxy=proxy,
+                    proxy=None,
+                    timeout=30,
+                    port=993,
             ).login(self.email, self.password) as mailbox:
                 for folder in spam_folders:
                     if mailbox.folder.exists(folder):

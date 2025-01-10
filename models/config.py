@@ -53,6 +53,7 @@ class Config(BaseModel):
     two_captcha_api_key: str = ""
     anti_captcha_api_key: str = ""
     delay_before_start: DelayBeforeStart
+    registered_account_password: str = ""
 
     threads: PositiveInt
     imap_settings: dict[str, str]

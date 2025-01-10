@@ -200,7 +200,7 @@ class DawnExtensionAPI:
             "lastname": names.get_last_name(),
             "email": self.account_data.email,
             "mobile": "",
-            "password": self.account_data.password,
+            "password": config.registered_account_password,
             "country": "+91",
             "referralCode": random.choice(config.referral_codes) if config.referral_codes else "",
             "puzzle_id": puzzle_id,
