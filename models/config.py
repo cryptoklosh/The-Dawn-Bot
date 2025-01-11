@@ -56,6 +56,7 @@ class Config(BaseModel):
     registered_account_password: str = ""
 
     threads: PositiveInt
+    use_proxy_for_imap: bool
     imap_settings: dict[str, str]
 
     keepalive_interval: PositiveInt

@@ -3,15 +3,13 @@ from typing import Tuple, Any, Optional, Literal
 
 import pytz
 from loguru import logger
-from loader import config, file_operations
+from loader import config, file_operations, captcha_solver, headers_manager
 from models import Account, OperationResult, StatisticData
 
 from .api import DawnExtensionAPI
 from utils import EmailValidator, LinkExtractor, mined_dawn_gauge, dawn_requests_total_counter
 from database import Accounts
 from .exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType
-
-from threading import RLock
 
 
 class Bot(DawnExtensionAPI):
@@ -24,33 +22,43 @@ class Bot(DawnExtensionAPI):
         dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").reset()
         dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").reset()
 
-    async def get_captcha_data(self) -> Tuple[str, Any, Optional[Any]]:
+    async def get_captcha_data(self, captcha_type: Literal["image", "turnistale"]) -> Tuple[str, Any, Optional[Any]] | str:
         for _ in range(5):
             try:
-                puzzle_id = await self.get_puzzle_id()
-                image = await self.get_puzzle_image(puzzle_id)
+                if captcha_type == "image":
+                    puzzle_id = await self.get_puzzle_id()
+                    image = await self.get_puzzle_image(puzzle_id)
 
-                logger.info(
-                    f"Account: {self.account_data.email} | Got puzzle image, solving..."
-                )
-                answer, solved, *rest = await self.solve_puzzle(image)
-
-                if solved and len(answer) == 6:
-                    logger.success(
-                        f"Account: {self.account_data.email} | Puzzle solved: {answer}"
+                    logger.info(
+                        f"Account: {self.account_data.email} | Got puzzle image, solving..."
                     )
-                    return puzzle_id, answer, rest[0] if rest else None
+                    answer, solved, *rest = await captcha_solver.solve_image(image)
 
-                if len(answer) != 6 and rest:
-                    await self.report_invalid_puzzle(rest[0])
+                    if solved and len(answer) == 6:
+                        logger.success(
+                            f"Account: {self.account_data.email} | Puzzle solved: {answer}"
+                        )
+                        return puzzle_id, answer, rest[0] if rest else None
 
-                if len(answer) > 30:
+                    if len(answer) != 6 and rest:
+                        await captcha_solver.report_bad(rest[0])
+
                     logger.error(
                         f"Account: {self.account_data.email} | Failed to solve puzzle: {answer} | Retrying..."
                     )
-                else:
+
+                elif captcha_type == "turnistale":
+                    logger.info(f"Account: {self.account_data.email} | Solving Cloudflare challenge...")
+                    answer, solved, *rest = await captcha_solver.solve_turnistale()
+
+                    if solved:
+                        logger.success(
+                            f"Account: {self.account_data.email} | Cloudflare challenge solved"
+                        )
+                        return answer
+
                     logger.error(
-                        f"Account: {self.account_data.email} | Failed to solve puzzle: Incorrect answer | Retrying..."
+                        f"Account: {self.account_data.email} | Failed to solve Cloudflare challenge: {answer} | Retrying..."
                     )
 
             except SessionRateLimited:
@@ -58,7 +66,7 @@ class Bot(DawnExtensionAPI):
 
             except Exception as e:
                 logger.error(
-                    f"Account: {self.account_data.email} | Error occurred while solving captcha: {str(e)} | Retrying..."
+                    f"Account: {self.account_data.email} | Error occurred while solving captcha ({captcha_type}): {str(e)} | Retrying..."
                 )
 
         raise CaptchaSolvingFailed("Failed to solve captcha after 5 attempts")
@@ -66,7 +74,7 @@ class Bot(DawnExtensionAPI):
     async def clear_account_and_session(self) -> None:
         if await Accounts.get_account(email=self.account_data.email):
             await Accounts.delete_account(email=self.account_data.email)
-        self.session = self.setup_session()
+        self.session = self._create_session()
 
 
     @staticmethod
@@ -76,22 +84,53 @@ class Bot(DawnExtensionAPI):
             await file_operations.export_unverified_email(email, password)
 
         else:
-            logger.error(f"Account: {email} | Account is banned | Removed from farming")
+            logger.error(f"Account: {email} | Account is banned | Removed from list")
             await file_operations.export_banned_email(email, password)
 
         for account in config.accounts_to_farm:
             if account.email == email:
                 config.accounts_to_farm.remove(account)
 
+
+    async def _validate_email(self) -> dict:
+        if config.redirect_settings.enabled:
+            result = await EmailValidator(
+                config.redirect_settings.imap_server,
+                config.redirect_settings.email,
+                config.redirect_settings.password
+            ).validate(None if config.redirect_settings.use_proxy is False else self.account_data.proxy)
+        else:
+            result = await EmailValidator(
+                self.account_data.imap_server,
+                self.account_data.email,
+                self.account_data.password
+            ).validate(None if config.use_proxy_for_imap is False else self.account_data.proxy)
+
+        return result
+
+
+    async def _extract_link(self) -> dict:
+        if config.redirect_settings.enabled:
+            confirm_url = await LinkExtractor(
+                imap_server=config.redirect_settings.imap_server,
+                email=config.redirect_settings.email,
+                password=config.redirect_settings.password,
+                redirect_email=self.account_data.email
+            ).extract_link(None if config.redirect_settings.use_proxy is False else self.account_data.proxy)
+        else:
+            confirm_url = await LinkExtractor(
+                imap_server=self.account_data.imap_server,
+                email=self.account_data.email,
+                password=self.account_data.password,
+            ).extract_link(None if config.redirect_settings.use_proxy is False else self.account_data.proxy)
+
+        return confirm_url
+
     async def process_reverify_email(self, link_sent: bool = False) -> OperationResult:
         task_id = None
 
         try:
-            result = await EmailValidator(
-                self.account_data.imap_server if not config.redirect_settings.enabled else config.redirect_settings.imap_server,
-                self.account_data.email if not config.redirect_settings.enabled else config.redirect_settings.email,
-                self.account_data.password if not config.redirect_settings.enabled else config.redirect_settings.password
-            ).validate(None if config.redirect_settings.enabled and not config.redirect_settings.use_proxy else self.account_data.proxy)
+            result = await self._validate_email()
             if not result["status"]:
                 logger.error(f"Account: {self.account_data.email} | Email is invalid: {result['data']}")
                 return OperationResult(
@@ -101,20 +140,14 @@ class Bot(DawnExtensionAPI):
                 )
 
             logger.info(f"Account: {self.account_data.email} | Re-verifying email...")
-            puzzle_id, answer, task_id = await self.get_captcha_data()
+            puzzle_id, answer, task_id = await self.get_captcha_data("image")
 
             if not link_sent:
                 await self.resend_verify_link(puzzle_id, answer)
                 logger.info(f"Account: {self.account_data.email} | Successfully resent verification email, waiting for email...")
                 link_sent = True
 
-            confirm_url = await LinkExtractor(
-                mode="re-verify",
-                imap_server=self.account_data.imap_server if not config.redirect_settings.enabled else config.redirect_settings.imap_server,
-                email=self.account_data.email if not config.redirect_settings.enabled else config.redirect_settings.email,
-                password=self.account_data.password if not config.redirect_settings.enabled else config.redirect_settings.password
-            ).extract_link(None if config.redirect_settings.enabled and not config.redirect_settings.use_proxy else self.account_data.proxy)
-
+            confirm_url = await self._extract_link()
             if not confirm_url["status"]:
                 logger.error(f"Account: {self.account_data.email} | Confirmation link not found: {confirm_url['data']}")
                 return OperationResult(
@@ -127,19 +160,20 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Link found, confirming email..."
             )
 
-            response = await self.clear_request(url=confirm_url["data"])
-            if response.status_code == 200:
-                logger.success(
-                    f"Account: {self.account_data.email} | Successfully confirmed email"
-                )
-                return OperationResult(
-                    identifier=self.account_data.email,
-                    data=self.account_data.password,
-                    status=True,
-                )
+            try:
+                key = confirm_url["data"].split("key=")[1]
+            except IndexError:
+                response = await self.clear_request(confirm_url["data"])
+                key = response.url.split("key=")[1]
 
-            logger.error(
-                f"Account: {self.account_data.email} | Failed to confirm email"
+            cloudflare_token = await self.get_captcha_data("turnistale")
+            await self.verify_registration(key, cloudflare_token)
+
+            logger.success(f"Email verified successfully")
+            return OperationResult(
+                identifier=self.account_data.email,
+                data=self.account_data.password,
+                status=True,
             )
 
         except APIError as error:
@@ -147,7 +181,7 @@ class Bot(DawnExtensionAPI):
                 case APIErrorType.INCORRECT_CAPTCHA:
                     logger.warning(f"Account: {self.account_data.email} | Captcha answer incorrect, re-solving...")
                     if task_id:
-                        await self.report_invalid_puzzle(task_id)
+                        await captcha_solver.report_bad(task_id)
                     return await self.process_reverify_email(link_sent=link_sent)
 
                 case APIErrorType.EMAIL_EXISTS:
@@ -181,11 +215,7 @@ class Bot(DawnExtensionAPI):
         task_id = None
 
         try:
-            result = await EmailValidator(
-                self.account_data.imap_server if not config.redirect_settings.enabled else config.redirect_settings.imap_server,
-                self.account_data.email if not config.redirect_settings.enabled else config.redirect_settings.email,
-                self.account_data.password if not config.redirect_settings.enabled else config.redirect_settings.password
-            ).validate(None if config.redirect_settings.enabled and not config.redirect_settings.use_proxy else self.account_data.proxy)
+            result = await self._validate_email()
             if not result["status"]:
                 logger.error(f"Account: {self.account_data.email} | Email is invalid: {result['data']}")
                 return OperationResult(
@@ -195,20 +225,14 @@ class Bot(DawnExtensionAPI):
                 )
 
             logger.info(f"Account: {self.account_data.email} | Registering...")
-            puzzle_id, answer, task_id = await self.get_captcha_data()
+            puzzle_id, answer, task_id = await self.get_captcha_data("image")
 
             await self.register(puzzle_id, answer)
             logger.info(
-                f"Account: {self.account_data.email} | Successfully registered, waiting for email..."
+                f"Account: {self.account_data.email} | Registered, waiting for email..."
             )
 
-            confirm_url = await LinkExtractor(
-                mode="verify",
-                imap_server=self.account_data.imap_server if not config.redirect_settings.enabled else config.redirect_settings.imap_server,
-                email=self.account_data.email if not config.redirect_settings.enabled else config.redirect_settings.email,
-                password=self.account_data.password if not config.redirect_settings.enabled else config.redirect_settings.password
-            ).extract_link(None if config.redirect_settings.enabled and not config.redirect_settings.use_proxy else self.account_data.proxy)
-
+            confirm_url = await self._extract_link()
             if not confirm_url["status"]:
                 logger.error(f"Account: {self.account_data.email} | Confirmation link not found: {confirm_url['data']}")
                 return OperationResult(
@@ -221,19 +245,20 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Link found, confirming registration..."
             )
 
-            response = await self.clear_request(url=confirm_url["data"])
-            if response.status_code == 200:
-                logger.success(
-                    f"Account: {self.account_data.email} | Successfully confirmed registration"
-                )
-                return OperationResult(
-                    identifier=self.account_data.email,
-                    data=self.account_data.password,
-                    status=True,
-                )
+            try:
+                key = confirm_url["data"].split("key=")[1]
+            except IndexError:
+                response = await self.clear_request(confirm_url["data"])
+                key = response.url.split("key=")[1]
 
-            logger.error(
-                f"Account: {self.account_data.email} | Failed to confirm registration"
+            cloudflare_token = await self.get_captcha_data("turnistale")
+            await self.verify_registration(key, cloudflare_token)
+
+            logger.success(f"Registration verified and completed")
+            return OperationResult(
+                identifier=self.account_data.email,
+                data=self.account_data.password,
+                status=True,
             )
 
 
@@ -242,24 +267,21 @@ class Bot(DawnExtensionAPI):
                 case APIErrorType.INCORRECT_CAPTCHA:
                     logger.warning(f"Account: {self.account_data.email} | Captcha answer incorrect, re-solving...")
                     if task_id:
-                        await self.report_invalid_puzzle(task_id)
+                        await captcha_solver.report_bad(task_id)
                     return await self.process_registration()
 
                 case APIErrorType.EMAIL_EXISTS:
                     logger.warning(f"Account: {self.account_data.email} | Email already exists")
-
-                case APIErrorType.DOMAIN_BANNED:
-                    logger.warning(f"Account: {self.account_data.email} | Most likely email domain <{self.account_data.email.split('@')[1]}> is banned")
-
-                case APIErrorType.DOMAIN_BANNED_2:
-                    logger.warning(f"Account: {self.account_data.email} | Most likely email domain <{self.account_data.email.split('@')[1]}> is banned")
 
                 case APIErrorType.CAPTCHA_EXPIRED:
                     logger.warning(f"Account: {self.account_data.email} | Captcha expired, re-solving...")
                     return await self.process_registration()
 
                 case _:
-                    logger.error(f"Account: {self.account_data.email} | Failed to register: {error}")
+                    if "Something went wrong" in error.error_message:
+                        logger.warning(f"Account: {self.account_data.email} | Most likely email domain <{self.account_data.email.split('@')[1]}> is banned")
+                    else:
+                        logger.error(f"Account: {self.account_data.email} | Failed to register: {error}")
 
         except Exception as error:
             logger.error(
@@ -273,7 +295,7 @@ class Bot(DawnExtensionAPI):
         )
 
     @staticmethod
-    def get_sleep_up_to(blocked: bool = False) -> datetime:
+    def get_sleep_until(blocked: bool = False) -> datetime:
         duration = (
             timedelta(minutes=10)
             if blocked
@@ -289,7 +311,7 @@ class Bot(DawnExtensionAPI):
                 if await self.handle_sleep(db_account_data.session_blocked_until):
                     return
 
-            if not db_account_data or not db_account_data.headers:
+            if not db_account_data or not db_account_data.auth_token:
                 if not await self.login_new_account():
                     return
 
@@ -316,7 +338,10 @@ class Bot(DawnExtensionAPI):
                     return await self.process_farming()
 
                 case _:
-                    logger.error(f"Account: {self.account_data.email} | Failed to farm: {error}")
+                    if "Something went wrong" in error.error_message:
+                        await self.handle_invalid_account(self.account_data.email, self.account_data.password, "banned")
+                    else:
+                        logger.error(f"Account: {self.account_data.email} | Failed to farm: {error}")
 
 
         except Exception as error:
@@ -330,19 +355,13 @@ class Bot(DawnExtensionAPI):
         try:
             db_account_data = await Accounts.get_account(email=self.account_data.email)
 
-            if db_account_data and db_account_data.session_blocked_until:
-                if await self.handle_sleep(db_account_data.session_blocked_until):
-                    return StatisticData(
-                        success=False, referralPoint=None, rewardPoint=None
-                    )
-
-            if not db_account_data or not db_account_data.headers:
+            if not db_account_data or not db_account_data.auth_token:
                 if not await self.login_new_account():
                     return StatisticData(
                         success=False, referralPoint=None, rewardPoint=None
                     )
 
-            elif not await self.handle_existing_account(db_account_data):
+            elif not await self.handle_existing_account(db_account_data, verify_sleep=False):
                 return StatisticData(
                     success=False, referralPoint=None, rewardPoint=None
                 )
@@ -374,9 +393,12 @@ class Bot(DawnExtensionAPI):
                     return await self.process_get_user_info()
 
                 case _:
-                    logger.error(
-                        f"Account: {self.account_data.email} | Failed to get user info: {error}"
-                    )
+                    if "Something went wrong" in error.error_message:
+                        await self.handle_invalid_account(self.account_data.email, self.account_data.password, "banned")
+                    else:
+                        logger.error(
+                            f"Account: {self.account_data.email} | Failed to get user info: {error}"
+                        )
 
         except Exception as error:
             logger.error(
@@ -396,9 +418,9 @@ class Bot(DawnExtensionAPI):
                         status=False,
                     )
             else:
-                await self.handle_existing_account(db_account_data)
+                await self.handle_existing_account(db_account_data, verify_sleep=False)
 
-            logger.info(f"Account: {self.account_data.email} | Completing tasks...")
+            logger.info(f"Account: {self.account_data.email} | Completing tasks... | It may take a while")
             await self.complete_tasks()
 
             logger.success(
@@ -425,12 +447,12 @@ class Bot(DawnExtensionAPI):
 
         try:
             logger.info(f"Account: {self.account_data.email} | Logging in...")
-            puzzle_id, answer, task_id = await self.get_captcha_data()
+            puzzle_id, answer, task_id = await self.get_captcha_data("image")
 
             await self.login(puzzle_id, answer)
             logger.info(f"Account: {self.account_data.email} | Successfully logged in")
 
-            await Accounts.create_account(email=self.account_data.email, app_id=self.account_data.appid, headers=self.session.headers)
+            await Accounts.create_account(email=self.account_data.email, app_id=self.account_data.appid, auth_token=headers_manager.BEARER_TOKEN)
             return True
 
         except APIError as error:
@@ -438,7 +460,7 @@ class Bot(DawnExtensionAPI):
                 case APIErrorType.INCORRECT_CAPTCHA:
                     logger.warning(f"Account: {self.account_data.email} | Captcha answer incorrect, re-solving...")
                     if task_id:
-                        await self.report_invalid_puzzle(task_id)
+                        await captcha_solver.report_bad(task_id)
                     return await self.login_new_account()
 
                 case APIErrorType.UNVERIFIED_EMAIL:
@@ -454,12 +476,16 @@ class Bot(DawnExtensionAPI):
                     return await self.login_new_account()
 
                 case _:
-                    logger.error(f"Account: {self.account_data.email} | Failed to login: {error}")
+                    if "Something went wrong" in error.error_message:
+                        await self.handle_invalid_account(self.account_data.email, self.account_data.password, "banned")
+                    else:
+                        logger.error(f"Account: {self.account_data.email} | Failed to login: {error}")
+
                     return False
 
         except CaptchaSolvingFailed:
-            sleep_up_to = self.get_sleep_up_to()
-            self.account_data.sleep_up_to = sleep_up_to
+            sleep_until = self.get_sleep_until()
+            await Accounts.set_sleep_until(self.account_data.email, sleep_until)
             logger.error(
                 f"Account: {self.account_data.email} | Failed to solve captcha after 5 attempts, sleeping..."
             )
@@ -471,13 +497,14 @@ class Bot(DawnExtensionAPI):
             )
             return False
 
-    async def handle_existing_account(self, db_account_data) -> bool | None:
-        if await self.handle_sleep(
-            self.account_data.sleep_up_to
-        ):
-            return False
+    async def handle_existing_account(self, db_account_data, verify_sleep: bool = True) -> bool | None:
+        if verify_sleep:
+            if db_account_data.sleep_until and await self.handle_sleep(
+                db_account_data.sleep_until
+            ):
+                return False
 
-        self.session.headers = db_account_data.headers
+        headers_manager.BEARER_TOKEN = db_account_data.auth_token
         status, result = await self.verify_session()
         if not status:
             logger.warning(
@@ -494,17 +521,17 @@ class Bot(DawnExtensionAPI):
         logger.error(
             f"Account: {self.account_data.email} | Session rate-limited | Sleeping..."
         )
-        sleep_up_to = self.get_sleep_up_to(blocked=True)
-        await Accounts.set_session_blocked_until(email=self.account_data.email, session_blocked_until=sleep_up_to, app_id=self.account_data.appid)
+        sleep_until = self.get_sleep_until(blocked=True)
+        await Accounts.set_session_blocked_until(email=self.account_data.email, session_blocked_until=sleep_until, app_id=self.account_data.appid)
 
-    async def handle_sleep(self, sleep_up_to):
+    async def handle_sleep(self, sleep_until):
         current_time = datetime.now(pytz.UTC)
-        sleep_up_to = sleep_up_to.replace(tzinfo=pytz.UTC)
+        sleep_until = sleep_until.replace(tzinfo=pytz.UTC)
 
-        if sleep_up_to > current_time:
-            sleep_duration = (sleep_up_to - current_time).total_seconds()
+        if sleep_until > current_time:
+            sleep_duration = (sleep_until - current_time).total_seconds()
             logger.debug(
-                f"Account: {self.account_data.email} | Sleeping until next action {sleep_up_to} (duration: {sleep_duration:.2f} seconds)"
+                f"Account: {self.account_data.email} | Sleeping until next action {sleep_until} (duration: {sleep_duration:.2f} seconds)"
             )
             return True
 
@@ -525,27 +552,16 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Sent keepalive request"
             )
 
-            with self.shared_accounts_lock:
-                last_request_at_sec = self.shared_accounts_to_last_request.get(self.account_data.email, 0)
-                now_sec = datetime.now(pytz.UTC).timestamp()
+            user_info = await self.user_info()
+            logger.info(
+                f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
+            )
 
-                self.shared_accounts_to_last_request[self.account_data.email] = now_sec
-                if last_request_at_sec + self.shared_accounts_eviction_timeout_sec > now_sec:
-                    logger.debug(
-                        f"Skipping account fetch for {self.account_data.email} - last request at {last_request_at_sec}"
-                    )
-                else:
-                    user_info = await self.user_info()
+            mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
+                lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
+            )
 
-                    logger.info(
-                        f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
-                    )
-
-                    mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
-                        lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
-                    )
-
-                    dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
+            dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
         except Exception as error:
             logger.error(
                 f"Account: {self.account_data.email} | Failed to perform farming actions: {error}"
@@ -553,5 +569,7 @@ class Bot(DawnExtensionAPI):
             dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").inc()
 
         finally:
-            new_sleep_up_to = self.get_sleep_up_to()
-            self.account_data.sleep_up_to = new_sleep_up_to
+            new_sleep_until = self.get_sleep_until()
+            await Accounts.set_sleep_until(
+                email=self.account_data.email, sleep_until=new_sleep_until
+            )

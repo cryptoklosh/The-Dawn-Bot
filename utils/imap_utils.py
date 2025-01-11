@@ -2,18 +2,14 @@ import os
 import ssl
 import re
 import asyncio
-
 from typing import Optional, Dict, Literal
 from datetime import datetime, timezone
-
 from loguru import logger
-from imap_tools import MailBox, AND, MailboxLoginError, MailMessageFlags
+from imap_tools import MailBox, AND, MailboxLoginError
 from imaplib import IMAP4, IMAP4_SSL
 from better_proxy import Proxy
 from python_socks.sync import Proxy as SyncProxy
-
 from models import OperationResult
-
 
 os.environ['SSLKEYLOGFILE'] = ''
 
@@ -109,10 +105,8 @@ class EmailValidator:
             def login_sync():
                 with MailBoxClient(
                         host=self.imap_server,
-#                         proxy=proxy,
-                        proxy=None,
-                        timeout=30,
-                        port=993,
+                        proxy=proxy,
+                        timeout=30
                 ).login(self.email, self.password):
                     return True
 
@@ -120,20 +114,20 @@ class EmailValidator:
             return {
                 "status": True,
                 "identifier": self.email,
-                "data": f"Valid:{datetime.now()}"
+                "data": f"Valid:{datetime.now()}",
             }
 
         except MailboxLoginError:
             return {
                 "status": False,
                 "identifier": self.email,
-                "data": "Invalid credentials"
+                "data": "Invalid credentials",
             }
         except Exception as error:
             return {
                 "status": False,
                 "identifier": self.email,
-                "data": f"Validation failed: {str(error)}"
+                "data": f"Validation failed: {str(error)}",
             }
 
 
@@ -153,169 +147,124 @@ class LinkExtractor:
 
     def __init__(
             self,
-            mode: Literal["verify", "re-verify"],
             imap_server: str,
             email: str,
             password: str,
             max_attempts: int = 8,
             delay_seconds: int = 5,
+            redirect_email: Optional[str] = None,
     ):
         self.imap_server = imap_server
         self.email = email
         self.password = password
         self.max_attempts = max_attempts
         self.delay_seconds = delay_seconds
-        self.link_pattern = r"https://www\.aeropres\.in/chromeapi/dawn/v1/user/verifylink\?key=[a-f0-9-]+" if mode == "verify" else r"https://u31952478\.ct\.sendgrid\.net/ls/click\?upn=.+?(?=><button|\"|\s|$)"
+        self.redirect_email = redirect_email
+        self.link_patterns = [
+            r"(https://www\.aeropres\.in/chromeapi/dawn/v1/userverify/verifyconfirm\?key=[a-f0-9-]+)",
+            r"(https?://webmail\.online/go\.php\?r=(?:[A-Za-z0-9+/]|%[0-9A-Fa-f]{2})+)",
+            r"(https?://u\d+\.ct\.sendgrid\.net/ls/click\?upn=[A-Za-z0-9\-_%.]+(?:[A-Za-z0-9\-_%.=&])*)"
+        ]
 
     async def extract_link(self, proxy: Optional[Proxy] = None) -> OperationResult:
         logger.info(f"Account: {self.email} | Checking email for link...")
+        return await self.search_with_retries(proxy)
+
+    def _collect_messages(self, mailbox: MailBox):
+        messages = []
+
+        for msg in mailbox.fetch(reverse=True, criteria=AND(from_="hello@dawninternet.com"), limit=10, mark_seen=True):
+            if self.redirect_email and self.redirect_email != msg.to[0]:
+                continue
+            msg_date = msg.date.replace(tzinfo=timezone.utc) if msg.date.tzinfo is None else msg.date
+            messages.append((msg, msg_date))
+
+        for msg in mailbox.fetch(reverse=True, limit=10, mark_seen=True):
+            if msg.from_.startswith("hello_at_dawn_internet_com") or msg.from_ == "hello@dawninternet.com":
+                if self.redirect_email and self.redirect_email != msg.to[0]:
+                    continue
+
+                msg_date = msg.date.replace(tzinfo=timezone.utc) if msg.date.tzinfo is None else msg.date
+                messages.append((msg, msg_date))
+
+        return messages
+
+    def _process_latest_message(self, messages):
+        if not messages:
+            return None
 
         try:
-            link = await self._search_with_retries(proxy)
+            if self.redirect_email:
+                filtered_messages = [(msg, date) for msg, date in messages if self.redirect_email in msg.to]
+                if not filtered_messages:
+                    return None
+
+                latest_msg, latest_date = max(filtered_messages, key=lambda x: x[1])
+            else:
+                latest_msg, latest_date = max(messages, key=lambda x: x[1])
+
+        except (ValueError, AttributeError):
+            return None
+
+        msg_age = (datetime.now(timezone.utc) - latest_date).total_seconds()
+        if msg_age > 300:
+            return None
+
+        body = latest_msg.text or latest_msg.html
+        if not body:
+            return None
+
+        for link_pattern in self.link_patterns:
+            if match := re.search(link_pattern, body):
+                code = str(match.group(1))
+
+                if self._link_cache.is_link_used(code):
+                    return None
+
+                self._link_cache.add_link(self.email, code)
+                return code
+
+        return None
+
+    async def _search_in_all_folders(self, proxy: Optional[Proxy]) -> Optional[str]:
+        def search_in():
+            all_messages = []
+            with MailBoxClient(host=self.imap_server, proxy=proxy, timeout=30).login(self.email, self.password) as mailbox:
+                for folder in mailbox.folder.list():
+                    if folder.name.lower() == "gmail":
+                        continue
+
+                    try:
+                        if mailbox.folder.exists(folder.name):
+                            mailbox.folder.set(folder.name)
+                            messages = self._collect_messages(mailbox)
+                            all_messages.extend(messages)
+
+                    except Exception as e:
+                        # logger.warning(f"Account: {self.email} | Error in folder {folder.name}: {str(e)} | Skipping...")
+                        pass
+
+                return self._process_latest_message(all_messages) if all_messages else None
+
+        return await asyncio.to_thread(search_in)
+
+    async def search_with_retries(self, proxy: Optional[Proxy] = None) -> OperationResult:
+        for attempt in range(self.max_attempts):
+            link = await self._search_in_all_folders(proxy)
             if link:
-                return self._create_success_result(link)
+                return {
+                    "status": True,
+                    "identifier": self.email,
+                    "data": link,
+                }
 
-            logger.warning(
-                f"Account: {self.email} | Link not found after {self.max_attempts} attempts, "
-                "searching in spam folder..."
-            )
+            if attempt < self.max_attempts - 1:
+                logger.info(f"Account: {self.email} | Link not found | Retrying in {self.delay_seconds} seconds | Attempt: {attempt + 1}/{self.max_attempts}")
+                await asyncio.sleep(self.delay_seconds)
 
-            link = await self._search_spam_folders(proxy)
-            if link:
-                return self._create_success_result(link)
-
-            return {
-                "status": False,
-                "identifier": self.email,
-                "data": "Link not found in any folder"
-            }
-
-        except Exception as error:
-            return {
-                "status": False,
-                "identifier": self.email,
-                "data": f"Link extraction failed: {str(error)}"
-            }
-
-    async def _search_messages(self, mailbox: MailBox) -> Optional[str]:
-        messages = await asyncio.to_thread(mailbox.fetch)
-
-        for msg in messages:
-            if msg.from_.startswith("hello"):
-                body = msg.text or msg.html
-                if body:
-                    match = re.search(self.link_pattern, body)
-                    if match:
-                        return match.group(0)
-        return None
-
-    async def _search_with_retries(self, proxy: Optional[Proxy]) -> Optional[str]:
-        for attempt in range(2):
-            try:
-                def search_sync():
-                    with MailBoxClient(
-                            host=self.imap_server,
-#                             proxy=proxy,
-                            proxy=None,
-                            timeout=30,
-                            port=993,
-                    ).login(self.email, self.password) as mailbox:
-                        return self._sync_search_messages(mailbox)
-
-                link = await asyncio.to_thread(search_sync)
-                if link:
-                    return link
-
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Email {self.email} | Quick search attempt {attempt + 1} failed: {str(e)}")
-                await asyncio.sleep(1)
-
-        # Regular interval checks
-        for attempt in range(2, self.max_attempts):
-            try:
-                link = await asyncio.to_thread(search_sync)
-                if link:
-                    return link
-
-                if attempt < self.max_attempts - 1:
-                    logger.info(
-                        f"Account: {self.email} | Link not found. "
-                        f"Attempt {attempt + 1}/{self.max_attempts}. "
-                        f"Waiting {self.delay_seconds} seconds..."
-                    )
-                    await asyncio.sleep(self.delay_seconds)
-            except Exception as e:
-                logger.error(f"Email {self.email} | Search attempt {attempt + 1} failed: {str(e)}")
-                if attempt < self.max_attempts - 1:
-                    await asyncio.sleep(self.delay_seconds)
-
-        return None
-
-    def _sync_search_messages(self, mailbox: MailBox) -> Optional[str]:
-        latest_msg = None
-        latest_date = None
-
-        for msg in mailbox.fetch(reverse=True, criteria=AND(from_="hello@dawninternet.com")):
-            msg_date = msg.date.replace(tzinfo=timezone.utc) if msg.date.tzinfo is None else msg.date
-
-            if latest_date is None or msg_date > latest_date:
-                latest_msg = msg
-                latest_date = msg_date
-
-        if not latest_msg:
-            for msg in mailbox.fetch(reverse=True):
-                if msg.from_.startswith("hello"):
-                    msg_date = msg.date.replace(tzinfo=timezone.utc) if msg.date.tzinfo is None else msg.date
-
-                    if latest_date is None or msg_date > latest_date:
-                        latest_msg = msg
-                        latest_date = msg_date
-
-        if latest_msg and latest_date:
-            current_time = datetime.now(timezone.utc)
-            msg_age = (current_time - latest_date).total_seconds()
-
-            if msg_age <= 300:
-                body = latest_msg.text or latest_msg.html
-                if body:
-                    match = re.search(self.link_pattern, body)
-                    if match:
-                        link = match.group(0)
-
-                        if self._link_cache.is_link_used(link):
-                            return None
-
-                        mailbox.flag(latest_msg.uid, MailMessageFlags.SEEN, True)
-                        self._link_cache.add_link(self.email, link)
-                        return link
-
-        return None
-
-    async def _search_spam_folders(self, proxy: Optional[Proxy]) -> Optional[str]:
-        spam_folders = ("SPAM", "Spam", "spam", "Junk", "junk")
-
-        def search_in_spam():
-            with MailBoxClient(
-                    host=self.imap_server,
-#                     proxy=proxy,
-                    proxy=None,
-                    timeout=30,
-                    port=993,
-            ).login(self.email, self.password) as mailbox:
-                for folder in spam_folders:
-                    if mailbox.folder.exists(folder):
-                        mailbox.folder.set(folder)
-                        result = self._sync_search_messages(mailbox)
-                        if result:
-                            return result
-                return None
-
-        return await asyncio.to_thread(search_in_spam)
-
-    def _create_success_result(self, link: str) -> OperationResult:
+        logger.error(f"Account: {self.email} | Max attempts reached, code not found in any folder")
         return {
-            "status": True,
+            "status": False,
             "identifier": self.email,
-            "data": link
+            "data": "Max attempts reached",
         }
