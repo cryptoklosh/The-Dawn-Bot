@@ -13,7 +13,6 @@ from .exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed,
 
 
 class Bot(DawnExtensionAPI):
-    shared_accounts_lock: RLock = RLock()
     shared_accounts_to_last_request = dict()
     shared_accounts_eviction_timeout_sec: int = 5 * 60 # 5 minutes
 
@@ -116,13 +115,13 @@ class Bot(DawnExtensionAPI):
                 email=config.redirect_settings.email,
                 password=config.redirect_settings.password,
                 redirect_email=self.account_data.email
-            ).extract_link(None if config.redirect_settings.use_proxy is False else self.account_data.proxy)
+            ).extract_link(None if config.redirect_settings.use_proxy is False or config.use_proxy_for_imap is False else self.account_data.proxy)
         else:
             confirm_url = await LinkExtractor(
                 imap_server=self.account_data.imap_server,
                 email=self.account_data.email,
                 password=self.account_data.password,
-            ).extract_link(None if config.redirect_settings.use_proxy is False else self.account_data.proxy)
+            ).extract_link(None if config.redirect_settings.use_proxy is False or config.use_proxy_for_imap is False else self.account_data.proxy)
 
         return confirm_url
 
