@@ -69,6 +69,8 @@ def get_accounts(file_name: str, proxies: List[Proxy], redirect_mode: bool = Fal
             try:
                 if not account.strip():
                     continue
+                if account.startswith("#"):
+                    continue
 
                 if redirect_mode:
                     splits = account.split(":", 1)
