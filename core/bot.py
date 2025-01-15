@@ -570,9 +570,8 @@ class Bot(DawnExtensionAPI):
                 f"Account: {self.account_data.email} | Total points earned: {user_info['rewardPoint']['points']}"
             )
 
-            mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
-                lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
-            )
+            if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None:
+                mined_dawn_gauge.labels(account=f"{self.account_data.email}").set(user_info['rewardPoint']['points'])
 
             dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
         except Exception as error:
