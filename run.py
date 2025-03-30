@@ -12,7 +12,7 @@ def main():
 
     setup()
     start_http_server(8080)
-    app = ApplicationManager()
+    app = ApplicationManager(sys.argv)
     asyncio.run(app.run())
 
 

@@ -13,7 +13,7 @@ from database import initialize_database
 
 
 class ApplicationManager:
-    def __init__(self):
+    def __init__(self, argv):
         self.accounts_with_initial_delay: Set[str] = set()
         self.module_map = {
             "register": (config.accounts_to_register, self._process_registration),
@@ -22,6 +22,7 @@ class ApplicationManager:
             "export_stats": (config.accounts_to_farm, self._process_export_stats),
             "re_verify_accounts": (config.accounts_to_reverify, self._process_reverify),
         }
+        self.commands = argv[1:]
 
     async def initialize(self) -> None:
         await initialize_database()
@@ -123,8 +124,8 @@ class ApplicationManager:
     async def run(self) -> None:
         await self.initialize()
 
-        while True:
-            config.module = "farm"
+        for command in self.commands:
+            config.module = command
             if config.module not in self.module_map:
                 logger.error(f"Unknown module: {config.module}")
                 break
@@ -134,11 +135,9 @@ class ApplicationManager:
 
             if not accounts:
                 logger.error(f"No accounts for {config.module}")
-                input("\nPress Enter to continue...")
                 continue
 
             if config.module == "farm":
                 await self._farm_continuously(accounts)
             else:
                 await self._execute_module_for_accounts(accounts, process_func)
-                input("\nPress Enter to continue...")
