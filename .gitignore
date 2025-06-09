@@ -1,6 +1,6 @@
 db/
 logs/
-config/
+config
 results/
 
 # Byte-compiled / optimized / DLL files

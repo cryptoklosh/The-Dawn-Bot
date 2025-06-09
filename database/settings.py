@@ -1,5 +1,6 @@
 from loguru import logger
 from tortoise import Tortoise
+from loader import config
 
 
 async def initialize_database() -> None:
@@ -9,7 +10,6 @@ async def initialize_database() -> None:
             modules={"models": ["database.models.accounts"]},
             timezone="UTC",
         )
-
         await Tortoise.generate_schemas(safe=True)
 
     except Exception as error:
