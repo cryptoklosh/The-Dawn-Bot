@@ -6,6 +6,7 @@ COPY core ./core
 COPY database ./database
 COPY models ./models
 COPY utils ./utils
+COPY application.py ./application.py
 COPY loader.py ./loader.py
 COPY requirements.txt ./requirements.txt
 COPY run.py ./run.py
@@ -14,4 +15,4 @@ COPY setup.sh ./setup.sh
 
 RUN chmod -R 777 /root/dawn
 RUN ./setup.sh
-ENTRYPOINT ["./run.sh", "farm"]
+ENTRYPOINT ["./run.sh", "login", "farm"]
