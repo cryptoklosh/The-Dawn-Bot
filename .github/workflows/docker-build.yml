@@ -3,14 +3,6 @@ name: "Docker build"
 on:
   workflow_dispatch:
     inputs:
-      path:
-        description: 'Path to docker folder'
-        required: true
-        type: string
-      image:
-        description: 'Image name (without dcr.nodes.garden)'
-        required: true
-        type: string
       tag:
         description: 'Tag name (starting with v)'
         required: true
@@ -19,7 +11,7 @@ on:
         description: 'Platforms to build for'
         required: true
         type: string
-        default: 'linux/amd64,linux/arm64'
+        default: 'linux/amd64'
 
 jobs:
   build-push:
@@ -38,8 +30,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
-          context: ${{ inputs.path }}
+          context: .
           platforms: ${{ inputs.platforms }}
-          tags: ${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/${{ inputs.image }}:${{ inputs.tag }}
-          cache-from: type=registry,ref=${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/${{ inputs.image }}:cache
-          cache-to: type=registry,ref=${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/${{ inputs.image }}:cache,compression=zstd,mode=max
+          tags: ${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/node-dawn-validator:${{ inputs.tag }}
+          cache-from: type=registry,ref=${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/node-dawn-validator:cache
+          cache-to: type=registry,ref=${{ vars.GCP_ARTIFACT_REGISTRY_URL }}/node-dawn-validator:cache,compression=zstd,mode=max
