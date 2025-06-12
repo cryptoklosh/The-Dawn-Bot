@@ -14,13 +14,17 @@ from utils import EmailValidator, LinkExtractor, operation_failed, operation_suc
 from database import Accounts
 from core.exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType, ProxyForbidden, EmailValidationFailed
 
+import utils
 
 class Bot:
     def __init__(self, account_data: Account):
         self.account_data = account_data
+        utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").reset()
+        utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").reset()
 
     @staticmethod
     async def handle_invalid_account(email: str, password: str, reason: Literal["unverified", "banned", "unregistered", "unlogged"], log: bool = True) -> None:
+        utils.dawn_account_farming_gauge.labels(account=f"{email}").set(0)
         if reason == "unverified":
             if log:
                 logger.error(f"Account: {email} | Email not verified, run <<Register & Verify accounts>> module | Removed from list")
@@ -60,6 +64,7 @@ class Bot:
         error_delay = config.attempts_and_delay_settings.error_delay
         attempts_reached_phrase = "register" if context == "registration" else "verify" if context == "verify" else "login" if context == "login" else "complete tasks" if context == "tasks" else "export stats" if context == "stats" else "send keepalive"
 
+        utils.dawn_requests_total_counter.labels(account=f"{email}", status="fail").inc()
         def retry_log(msg: str):
             logger.warning(f"Account: {email} | {msg} | Attempt: {attempt + 1}/{max_attempts} | Retrying in {error_delay} seconds")
 
@@ -281,6 +286,7 @@ class Bot:
                 app_id = await api.get_app_id()
 
                 logger.success(f"Account: {self.account_data.email} | Received app ID: {app_id}")
+                utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
                 return app_id
 
             except APIError as error:
@@ -529,6 +535,7 @@ class Bot:
                 await db_account_value.update_account(auth_token=auth_token)
 
                 logger.success(f"Account: {self.account_data.email} | Account logged in successfully")
+                utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
                 return operation_success(self.account_data.email, self.account_data.password)
 
             except APIError as error:
@@ -619,6 +626,9 @@ class Bot:
                 user_info = await api.user_info(app_id=app_id)
 
                 logger.success(f"Account: {self.account_data.email} | Account stats retrieved successfully")
+                utils.mined_dawn_gauge.labels(account=f"{self.account_data.email}").set_function(
+                    lambda: user_info['rewardPoint']['points'] if user_info is not None and user_info['rewardPoint'] is not None and user_info['rewardPoint']['points'] is not None else 0
+                )
                 return operation_export_stats_success(user_info)
 
             except APIError as error:
@@ -665,6 +675,8 @@ class Bot:
                 logger.info(f"Account: {self.account_data.email} | Sending keepalive...")
                 await api.keepalive(self.account_data.email, app_id=app_id)
                 logger.success(f"Account: {self.account_data.email} | Keepalive sent successfully")
+                utils.dawn_account_farming_gauge.labels(account=f"{self.account_data.email}").set(1)
+                utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
 
             except APIError as error:
                 result = await self.handle_api_error(error, attempt, max_attempts, "keepalive", db_account_value)

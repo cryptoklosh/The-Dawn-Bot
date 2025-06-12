@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 
 from typing import List, Any, Set, Optional, Callable
 from loguru import logger
@@ -24,6 +25,8 @@ class ApplicationManager:
             "verify": (config.accounts_to_verify, self._execute_module_for_accounts),
         }
         self.commands = argv[1:]
+        self.export_stats_last = 0
+        self.export_stats_farm_period_sec = 60 * 60 # 1 hour
 
     @staticmethod
     async def initialize() -> None:
@@ -88,6 +91,10 @@ class ApplicationManager:
 
             await self._execute_module_for_accounts(accounts, "farm")
             await asyncio.sleep(5)
+
+            if time.time() - self.export_stats_last > self.export_stats_farm_period_sec:
+                await self._execute_module_for_accounts(accounts, "export_stats")
+                self.export_stats_last = time.time()
 
     @staticmethod
     async def _clean_accounts_proxies() -> None:

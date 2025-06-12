@@ -10,6 +10,8 @@ from better_proxy import Proxy
 from models import Account, Config
 from sys import exit
 
+import utils
+
 
 class ConfigurationError(Exception):
     pass
@@ -164,6 +166,10 @@ class ConfigLoader:
             accounts_to_login = list(self._parse_accounts("login_accounts.txt", "login_accounts"))
             accounts_to_verify = list(self._parse_accounts("verify_accounts.txt", "verify_accounts"))
             referral_codes = self._parse_referral_codes()
+
+            utils.dawn_info.info({"farm_accounts": f"{len(accounts_to_farm)}", "proxies": f"{len(proxies)}"})
+            for account_to_farm in accounts_to_farm:
+                utils.dawn_account_farming_gauge.labels(account=f"{account_to_farm.email}").set(0)
 
             if not any([
                 accounts_to_farm,
