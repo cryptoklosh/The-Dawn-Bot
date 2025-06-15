@@ -24,7 +24,7 @@ class Bot:
 
     @staticmethod
     async def handle_invalid_account(email: str, password: str, reason: Literal["unverified", "banned", "unregistered", "unlogged"], log: bool = True) -> None:
-        set_dawn_account_farming(self.account_data.email, reason)
+        set_dawn_account_farming(email, reason)
         if reason == "unverified":
             if log:
                 logger.error(f"Account: {email} | Email not verified, run <<Register & Verify accounts>> module | Removed from list")
