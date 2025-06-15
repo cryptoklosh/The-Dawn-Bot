@@ -19,13 +19,12 @@ import utils
 class Bot:
     def __init__(self, account_data: Account):
         self.account_data = account_data
-        utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").reset()
+        utils.set_dawn_requests_total_counter(self.account_data.email, utils.DAWN_ACCOUNT_SUCCESS)
         utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").reset()
 
     @staticmethod
     async def handle_invalid_account(email: str, password: str, reason: Literal["unverified", "banned", "unregistered", "unlogged"], log: bool = True) -> None:
-        utils.dawn_account_farming_gauge.clear()
-        utils.dawn_account_farming_gauge.labels(account=f"{email}", status=reason).set(1)
+        utils.set_dawn_requests_total_counter(self.account_data.email, reason)
         if reason == "unverified":
             if log:
                 logger.error(f"Account: {email} | Email not verified, run <<Register & Verify accounts>> module | Removed from list")

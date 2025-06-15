@@ -170,7 +170,7 @@ class ConfigLoader:
             utils.dawn_info.info({"farm_accounts": f"{len(accounts_to_farm)}", "proxies": f"{len(proxies)}"})
             for account_to_farm in accounts_to_farm:
                 utils.dawn_account_farming_gauge.clear()
-                utils.dawn_account_farming_gauge.labels(account=f"{account_to_farm.email}", status="Configuration loaded").set(1)
+                utils.set_dawn_account_farming(account_to_farm.email, utils.DAWN_ACCOUNT_STARTED)
 
             if not any([
                 accounts_to_farm,
