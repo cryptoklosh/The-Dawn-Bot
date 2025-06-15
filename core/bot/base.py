@@ -10,7 +10,7 @@ from loader import config, file_operations, captcha_solver, proxy_manager
 from models import Account, OperationResult, StatisticData
 
 from core.api.dawn import DawnExtensionAPI
-from utils import EmailValidator, LinkExtractor, operation_failed, operation_success, operation_export_stats_success, operation_export_stats_failed, validate_error, handle_sleep
+from utils import EmailValidator, LinkExtractor, operation_failed, operation_success, operation_export_stats_success, operation_export_stats_failed, validate_error, handle_sleep, set_dawn_account_farming
 from database import Accounts
 from core.exceptions.base import APIError, SessionRateLimited, CaptchaSolvingFailed, APIErrorType, ProxyForbidden, EmailValidationFailed
 
@@ -19,12 +19,12 @@ import utils
 class Bot:
     def __init__(self, account_data: Account):
         self.account_data = account_data
-        utils.set_dawn_requests_total_counter(self.account_data.email, utils.DAWN_ACCOUNT_SUCCESS)
+        utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").reset()
         utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="fail").reset()
 
     @staticmethod
     async def handle_invalid_account(email: str, password: str, reason: Literal["unverified", "banned", "unregistered", "unlogged"], log: bool = True) -> None:
-        utils.set_dawn_requests_total_counter(self.account_data.email, reason)
+        set_dawn_account_farming(self.account_data.email, reason)
         if reason == "unverified":
             if log:
                 logger.error(f"Account: {email} | Email not verified, run <<Register & Verify accounts>> module | Removed from list")
@@ -675,8 +675,7 @@ class Bot:
                 logger.info(f"Account: {self.account_data.email} | Sending keepalive...")
                 await api.keepalive(self.account_data.email, app_id=app_id)
                 logger.success(f"Account: {self.account_data.email} | Keepalive sent successfully")
-                utils.dawn_account_farming_gauge.clear()
-                utils.dawn_account_farming_gauge.labels(account=f"{self.account_data.email}", status="success").set(1)
+                set_dawn_account_farming(self.account_data.email, utils.DAWN_ACCOUNT_SUCCESS)
                 utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
 
             except APIError as error:
