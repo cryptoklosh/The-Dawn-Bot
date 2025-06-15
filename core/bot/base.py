@@ -24,7 +24,8 @@ class Bot:
 
     @staticmethod
     async def handle_invalid_account(email: str, password: str, reason: Literal["unverified", "banned", "unregistered", "unlogged"], log: bool = True) -> None:
-        utils.dawn_account_farming_gauge.labels(account=f"{email}", error_log=reason).set(0)
+        utils.dawn_account_farming_gauge.clear()
+        utils.dawn_account_farming_gauge.labels(account=f"{email}", status=reason).set(1)
         if reason == "unverified":
             if log:
                 logger.error(f"Account: {email} | Email not verified, run <<Register & Verify accounts>> module | Removed from list")
@@ -675,7 +676,8 @@ class Bot:
                 logger.info(f"Account: {self.account_data.email} | Sending keepalive...")
                 await api.keepalive(self.account_data.email, app_id=app_id)
                 logger.success(f"Account: {self.account_data.email} | Keepalive sent successfully")
-                utils.dawn_account_farming_gauge.labels(account=f"{self.account_data.email}", error_log="").set(1)
+                utils.dawn_account_farming_gauge.clear()
+                utils.dawn_account_farming_gauge.labels(account=f"{self.account_data.email}", status="success").set(1)
                 utils.dawn_requests_total_counter.labels(account=f"{self.account_data.email}", status="success").inc()
 
             except APIError as error:
