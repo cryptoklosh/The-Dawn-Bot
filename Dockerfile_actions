@@ -17,4 +17,4 @@ RUN chmod -R 777 /root/dawn
 RUN ./setup.sh
 ARG STEP
 ENV STEP_ENV=$STEP
-ENTRYPOINT "./run.sh $STEP_ENV"
+ENTRYPOINT ["./run.sh", "$STEP_ENV"]
