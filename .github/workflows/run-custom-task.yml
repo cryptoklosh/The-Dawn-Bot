@@ -1,0 +1,31 @@
+name: "Run custom task"
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: 'Command to run (registration or verify)'
+        type: string
+        default: 'registration'
+      register_accounts:
+        description: 'Register accounts'
+        type: string
+      verify_accounts:
+        description: 'Verify accounts'
+        type: string
+      settings:
+        description: 'settings.xml file'
+        type: string
+        required: true
+
+
+jobs:
+  build-push:
+    runs-on: gha-runner-scale-set-k8s-v2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t local --build-arg STEP=${{ github.event.inputs.step }} -f Dockerfile_actions .
+      - name: Run
+        run: docker run local

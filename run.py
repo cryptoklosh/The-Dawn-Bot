@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import os
 
 from application import ApplicationManager
 from utils import setup
@@ -13,7 +14,8 @@ def main():
     setup()
     start_http_server(8080)
     app = ApplicationManager(sys.argv)
-    asyncio.run(app.run())
+    x = asyncio.run(app.run())
+    os._exit(0)
 
 
 if __name__ == "__main__":
